@@ -17,15 +17,11 @@ const WebhookSchema = z.object({
 });
 
 export async function POST(request: NextRequest) {
-  try {
-    // Rate limiting (100 requests per minute per phone number)
-    const rateLimitResult = await rateLimit(request);
-    if (!rateLimitResult.success) {
-      return NextResponse.json(
-        { error: 'Rate limit exceeded' },
-        { status: 429 }
-      );
-    }
+  return NextResponse.json(
+    { status: "Webhook reached successfully" },
+    { status: 200 }
+  );
+}
 
    // TEMP: disable signature validation for testing
 // const isValid = await validateTwilioSignature(request);
