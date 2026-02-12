@@ -2,15 +2,21 @@ import { NextRequest } from 'next/server';
 import twilio from 'twilio';
 import { logger } from '@/lib/utils/logger';
 
-const accountSid = process.env.TWILIO_ACCOUNT_SID!;
-const authToken = process.env.TWILIO_AUTH_TOKEN!;
-const whatsappNumber = process.env.TWILIO_WHATSAPP_NUMBER!;
-
 /**
  * Get Twilio client instance.
  */
 function getTwilioClient() {
+  const accountSid = process.env.TWILIO_ACCOUNT_SID || '';
+  const authToken = process.env.TWILIO_AUTH_TOKEN || '';
   return twilio(accountSid, authToken);
+}
+
+function getAuthToken() {
+  return process.env.TWILIO_AUTH_TOKEN || '';
+}
+
+function getWhatsAppNumber() {
+  return process.env.TWILIO_WHATSAPP_NUMBER || '';
 }
 
 /**
@@ -36,7 +42,7 @@ export async function validateTwilioSignature(request: NextRequest): Promise<boo
       params[key] = value.toString();
     });
 
-    return twilio.validateRequest(authToken, signature, url, params);
+    return twilio.validateRequest(getAuthToken(), signature, url, params);
   } catch (error) {
     logger.error('Twilio signature validation error', { error });
     return false;
@@ -49,7 +55,7 @@ export async function validateTwilioSignature(request: NextRequest): Promise<boo
 export async function sendWhatsAppMessage(
   to: string,
   body: string,
-  mediaBuffer?: Buffer
+  _mediaBuffer?: Buffer
 ): Promise<string | null> {
   try {
     const client = getTwilioClient();
@@ -60,7 +66,7 @@ export async function sendWhatsAppMessage(
       body: string;
       mediaUrl?: string[];
     } = {
-      from: whatsappNumber,
+      from: getWhatsAppNumber(),
       to: `whatsapp:${to}`,
       body,
     };

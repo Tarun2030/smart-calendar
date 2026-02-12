@@ -69,7 +69,7 @@ export function parseRelativeDate(dateStr: string, referenceDate: string): strin
   // next <day>
   const nextDayMatch = lower.match(/^next\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)$/);
   if (nextDayMatch) {
-    const dayFunctions: Record<string, (d: Date) => Date> = {
+    const dayFunctions: Record<string, (_d: Date) => Date> = {
       monday: nextMonday,
       tuesday: nextTuesday,
       wednesday: nextWednesday,
@@ -87,7 +87,7 @@ export function parseRelativeDate(dateStr: string, referenceDate: string): strin
   // this <day> — treat as the coming occurrence
   const thisDayMatch = lower.match(/^this\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)$/);
   if (thisDayMatch) {
-    const dayFunctions: Record<string, (d: Date) => Date> = {
+    const dayFunctions: Record<string, (_d: Date) => Date> = {
       monday: nextMonday,
       tuesday: nextTuesday,
       wednesday: nextWednesday,

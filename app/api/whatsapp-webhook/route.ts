@@ -8,6 +8,7 @@ import { sendWhatsAppMessage } from '@/lib/integrations/twilio';
 import { logger } from '@/lib/utils/logger';
 import { rateLimit } from '@/lib/utils/rate-limiter';
 import { formatDate } from '@/lib/utils/date';
+import type { Event } from '@/lib/types/event.types';
 
 const WebhookSchema = z.object({
   From: z.string(),
@@ -111,13 +112,13 @@ export async function GET() {
   return NextResponse.json({ status: 'WhatsApp webhook is active' });
 }
 
-function formatConfirmationMessage(event: Record<string, unknown>): string {
-  const emoji = getEventEmoji(event.type as string);
+function formatConfirmationMessage(event: Event): string {
+  const emoji = getEventEmoji(event.type);
   const parts = [
     `${emoji} Got it! I've saved this event:`,
     '',
     `📝 ${event.title}`,
-    `📅 ${formatDate(event.date as string)}`,
+    `📅 ${formatDate(event.date)}`,
   ];
 
   if (event.time) parts.push(`🕐 ${event.time}`);

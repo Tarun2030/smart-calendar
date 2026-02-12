@@ -1,7 +1,9 @@
 import { Resend } from 'resend';
 import { logger } from '@/lib/utils/logger';
 
-const resend = new Resend(process.env.RESEND_API_KEY);
+function getResendClient(): Resend {
+  return new Resend(process.env.RESEND_API_KEY || 'placeholder');
+}
 
 interface SendEmailOptions {
   to: string;
@@ -23,6 +25,7 @@ export async function sendEmail(options: SendEmailOptions): Promise<string | nul
       return null;
     }
 
+    const resend = getResendClient();
     const { data, error } = await resend.emails.send({
       from: 'WhatsApp AI Assistant <noreply@yourdomain.com>',
       to: options.to,

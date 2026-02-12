@@ -24,7 +24,6 @@ import { Calendar } from '@/components/ui/calendar';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Download, Search, Calendar as CalendarIcon, MoreHorizontal } from 'lucide-react';
 import { formatDate, formatTime } from '@/lib/utils/date';
-import { cn } from '@/lib/utils/cn';
 import { exportToExcel } from '@/lib/utils/export';
 import type { Event } from '@/lib/types/event.types';
 import type { DateRange } from 'react-day-picker';

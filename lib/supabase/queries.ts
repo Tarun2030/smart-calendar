@@ -1,15 +1,28 @@
 import { getSupabaseAdmin } from './client';
 import { logger } from '@/lib/utils/logger';
-import type { Event, EventStats, User, ActivityLog } from '@/lib/types/event.types';
+import type { Event, EventStats, User } from '@/lib/types/event.types';
 
 function getAdmin() {
-  return getSupabaseAdmin();
+  const client = getSupabaseAdmin();
+  if (!client) {
+    throw new Error('Supabase is not configured. Please set environment variables.');
+  }
+  return client;
+}
+
+/**
+ * Check if Supabase is configured.
+ */
+function isConfigured(): boolean {
+  return getSupabaseAdmin() !== null;
 }
 
 /**
  * Create a new event.
  */
-export async function createEvent(eventData: Partial<Event> & { raw_message?: string; whatsapp_phone?: string }): Promise<Event> {
+export async function createEvent(
+  eventData: Partial<Event> & { raw_message?: string; whatsapp_phone?: string }
+): Promise<Event> {
   const supabase = getAdmin();
 
   // Look up user by phone number, or create one
@@ -26,7 +39,10 @@ export async function createEvent(eventData: Partial<Event> & { raw_message?: st
     } else {
       const { data: newUser, error: userError } = await supabase
         .from('users')
-        .insert({ phone_number: eventData.whatsapp_phone, whatsapp_enabled: true })
+        .insert({
+          phone_number: eventData.whatsapp_phone,
+          whatsapp_enabled: true,
+        })
         .select()
         .single();
 
@@ -68,7 +84,10 @@ export async function createEvent(eventData: Partial<Event> & { raw_message?: st
 /**
  * Update an existing event.
  */
-export async function updateEvent(id: string, updates: Partial<Event>): Promise<Event> {
+export async function updateEvent(
+  id: string,
+  updates: Partial<Event>
+): Promise<Event> {
   const supabase = getAdmin();
 
   const { data, error } = await supabase
@@ -95,6 +114,8 @@ export async function getEvents(filters?: {
   status?: string;
   limit?: number;
 }): Promise<Event[]> {
+  if (!isConfigured()) return [];
+
   const supabase = getAdmin();
 
   let query = supabase
@@ -119,7 +140,7 @@ export async function getEvents(filters?: {
 
   if (error) {
     logger.error('Failed to fetch events', { error });
-    throw new Error(`Failed to fetch events: ${error.message}`);
+    return [];
   }
 
   return (data || []) as Event[];
@@ -129,6 +150,8 @@ export async function getEvents(filters?: {
  * Get recent events (last 10).
  */
 export async function getRecentEvents(limit: number = 10): Promise<Event[]> {
+  if (!isConfigured()) return [];
+
   const supabase = getAdmin();
 
   const { data, error } = await supabase
@@ -148,7 +171,12 @@ export async function getRecentEvents(limit: number = 10): Promise<Event[]> {
 /**
  * Get upcoming events for a user within the next N days.
  */
-export async function getUpcomingEvents(userId: string, days: number = 7): Promise<Event[]> {
+export async function getUpcomingEvents(
+  userId: string,
+  days: number = 7
+): Promise<Event[]> {
+  if (!isConfigured()) return [];
+
   const supabase = getAdmin();
 
   const today = new Date().toISOString().split('T')[0];
@@ -176,7 +204,11 @@ export async function getUpcomingEvents(userId: string, days: number = 7): Promi
 /**
  * Get upcoming deadlines within the next N days.
  */
-export async function getUpcomingDeadlines(days: number = 7): Promise<Event[]> {
+export async function getUpcomingDeadlines(
+  days: number = 7
+): Promise<Event[]> {
+  if (!isConfigured()) return [];
+
   const supabase = getAdmin();
 
   const today = new Date().toISOString().split('T')[0];
@@ -207,8 +239,20 @@ export async function getUpcomingDeadlines(days: number = 7): Promise<Event[]> {
  * Get event statistics for the dashboard.
  */
 export async function getEventStats(): Promise<EventStats> {
-  const supabase = getAdmin();
+  const defaultStats: EventStats = {
+    total: 0,
+    flights: 0,
+    hotels: 0,
+    meetings: 0,
+    tasks: 0,
+    deadlines: 0,
+    pendingTasks: 0,
+    overdueTasks: 0,
+  };
 
+  if (!isConfigured()) return defaultStats;
+
+  const supabase = getAdmin();
   const today = new Date().toISOString().split('T')[0];
 
   const { data: allEvents, error } = await supabase
@@ -218,16 +262,7 @@ export async function getEventStats(): Promise<EventStats> {
 
   if (error) {
     logger.error('Failed to fetch event stats', { error });
-    return {
-      total: 0,
-      flights: 0,
-      hotels: 0,
-      meetings: 0,
-      tasks: 0,
-      deadlines: 0,
-      pendingTasks: 0,
-      overdueTasks: 0,
-    };
+    return defaultStats;
   }
 
   const events = allEvents || [];
@@ -240,7 +275,8 @@ export async function getEventStats(): Promise<EventStats> {
     tasks: events.filter((e) => e.type === 'task').length,
     deadlines: events.filter((e) => e.type === 'deadline').length,
     pendingTasks: events.filter(
-      (e) => (e.type === 'task' || e.type === 'deadline') && e.status === 'pending'
+      (e) =>
+        (e.type === 'task' || e.type === 'deadline') && e.status === 'pending'
     ).length,
     overdueTasks: events.filter(
       (e) =>
@@ -255,6 +291,8 @@ export async function getEventStats(): Promise<EventStats> {
  * Get all active users.
  */
 export async function getActiveUsers(): Promise<User[]> {
+  if (!isConfigured()) return [];
+
   const supabase = getAdmin();
 
   const { data, error } = await supabase
@@ -278,6 +316,8 @@ export async function logActivity(
   action: string,
   metadata: Record<string, unknown> = {}
 ): Promise<void> {
+  if (!isConfigured()) return;
+
   const supabase = getAdmin();
 
   const { error } = await supabase.from('activity_logs').insert({

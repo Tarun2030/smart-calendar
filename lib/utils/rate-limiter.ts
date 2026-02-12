@@ -33,11 +33,13 @@ export async function rateLimit(
 
   // Clean up expired entries periodically
   if (rateLimitMap.size > 10000) {
-    for (const [k, v] of rateLimitMap.entries()) {
+    const keysToDelete: string[] = [];
+    rateLimitMap.forEach((v, k) => {
       if (v.resetAt < now) {
-        rateLimitMap.delete(k);
+        keysToDelete.push(k);
       }
-    }
+    });
+    keysToDelete.forEach((k) => rateLimitMap.delete(k));
   }
 
   if (!entry || entry.resetAt < now) {

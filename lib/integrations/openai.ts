@@ -3,9 +3,11 @@ import { z } from 'zod';
 import { logger } from '@/lib/utils/logger';
 import { parseRelativeDate } from '@/lib/utils/date';
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
+function getOpenAIClient(): OpenAI {
+  return new OpenAI({
+    apiKey: process.env.OPENAI_API_KEY || '',
+  });
+}
 
 const EventExtractionSchema = z.object({
   type: z.enum(['flight', 'hotel', 'meeting', 'task', 'deadline']),
@@ -25,7 +27,7 @@ export type ExtractedEvent = z.infer<typeof EventExtractionSchema>;
  */
 export async function extractEventFromMessage(
   message: string,
-  userPhone: string
+  _userPhone: string
 ): Promise<ExtractedEvent | null> {
   try {
     const currentDate = new Date().toISOString().split('T')[0];
@@ -54,6 +56,7 @@ Examples:
 
 Return ONLY valid JSON matching the schema. If the message is unclear or not event-related, return null.`;
 
+    const openai = getOpenAIClient();
     const completion = await openai.chat.completions.create({
       model: 'gpt-4-turbo-preview',
       messages: [
