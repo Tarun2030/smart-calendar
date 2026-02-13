@@ -47,6 +47,23 @@ function getISTDate(offsetDays = 0) {
   return `${year}-${month}-${day}`;
 }
 
+/* ---------------- GET TODAY EVENTS ---------------- */
+
+async function getTodaysEvents(userId: string) {
+  const today = getISTDate(0);
+
+  const { data } = await supabase
+    .from('events')
+    .select('title,type')
+    .eq('user_id', userId)
+    .eq('date', today)
+    .order('created_at', { ascending: true });
+
+  if (!data || data.length === 0) return null;
+
+  return data.map(e => `• ${e.title}`).join('\n');
+}
+
 /* ---------------- MAIN WEBHOOK ---------------- */
 
 export async function POST(request: NextRequest) {
@@ -55,7 +72,7 @@ export async function POST(request: NextRequest) {
 
     const from = formData.get('From')?.toString() || '';
     const body = formData.get('Body')?.toString() || '';
-    const lower = body.toLowerCase();
+    const lower = body.toLowerCase().trim();
 
     console.log('Incoming WhatsApp message:', { from, body });
 
@@ -93,6 +110,17 @@ export async function POST(request: NextRequest) {
       payload: { from, body },
       status: 'received'
     });
+
+    /* ---------- COMMAND: TODAY ---------- */
+
+    if (lower === 'today' && userId) {
+      const list = await getTodaysEvents(userId);
+
+      if (!list)
+        return twiml('No events today');
+
+      return twiml(`You have today:\n${list}`);
+    }
 
     /* ---------- DATE PARSER ---------- */
 
