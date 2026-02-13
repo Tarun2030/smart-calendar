@@ -10,19 +10,23 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
 
-/**
- * Twilio may hit GET — must return XML
- */
-export async function GET() {
-  const twiml = `<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Message>Webhook active</Message>
-</Response>`;
+/* ---------------- TWILIO XML HELPER ---------------- */
 
-  return new NextResponse(twiml, {
+function twiml(message: string) {
+  return new NextResponse(`<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Message>${escapeXml(message)}</Message>
+</Response>`, {
     status: 200,
     headers: { 'Content-Type': 'text/xml' },
   });
+}
+
+/**
+ * Twilio verification / health
+ */
+export async function GET() {
+  return twiml('Webhook active');
 }
 
 /**
@@ -37,37 +41,47 @@ export async function POST(request: NextRequest) {
 
     console.log('Incoming WhatsApp message:', { from, body });
 
-    /* STORE RAW MESSAGE (guaranteed ingestion) */
+    /* ---------------- USER AUTO CREATE ---------------- */
+
+    const phone = from.replace('whatsapp:', '');
+    let userId: string | null = null;
+
+    const { data: existingUser } = await supabase
+      .from('users')
+      .select('id')
+      .eq('phone_number', phone)
+      .single();
+
+    if (existingUser) {
+      userId = existingUser.id;
+    } else {
+      const { data: newUser } = await supabase
+        .from('users')
+        .insert({ phone_number: phone })
+        .select('id')
+        .single();
+
+      userId = newUser?.id || null;
+    }
+
+    /* ---------------- STORE RAW MESSAGE ---------------- */
+
     await supabase.from('activity_logs').insert({
+      user_id: userId,
       event_type: 'incoming_whatsapp',
       payload: { from, body },
       status: 'received'
     });
 
+    /* ---------------- SIMPLE REPLY ---------------- */
+
     const replyText = `Received: ${body}`;
 
-    const twiml = `<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Message>${escapeXml(replyText)}</Message>
-</Response>`;
-
-    return new NextResponse(twiml, {
-      status: 200,
-      headers: { 'Content-Type': 'text/xml' },
-    });
+    return twiml(replyText);
 
   } catch (error) {
     console.error('Webhook error:', error);
-
-    const twiml = `<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Message>Server error. Please try again.</Message>
-</Response>`;
-
-    return new NextResponse(twiml, {
-      status: 200,
-      headers: { 'Content-Type': 'text/xml' },
-    });
+    return twiml('Server error. Please try again.');
   }
 }
 
