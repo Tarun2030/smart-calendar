@@ -82,16 +82,22 @@ export async function POST(request: NextRequest) {
 
     let eventDate: string | null = null;
 
-    if (lower.includes('tomorrow')) {
-      const d = new Date();
-      d.setDate(d.getDate() + 1);
-      eventDate = d.toISOString().split('T')[0];
-    }
+function getISTDate(offsetDays = 0) {
+  const now = new Date();
 
-    if (lower.includes('today')) {
-      const d = new Date();
-      eventDate = d.toISOString().split('T')[0];
-    }
+  const ist = new Date(
+    now.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' })
+  );
+
+  ist.setDate(ist.getDate() + offsetDays);
+
+  const year = ist.getFullYear();
+  const month = String(ist.getMonth() + 1).padStart(2, '0');
+  const day = String(ist.getDate()).padStart(2, '0');
+
+  return `${year}-${month}-${day}`;
+}
+
 
     let type = 'task';
     if (lower.includes('meeting')) type = 'meeting';
