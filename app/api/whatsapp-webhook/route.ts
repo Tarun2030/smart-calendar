@@ -43,13 +43,6 @@ function getISTDate(offsetDays = 0) {
 }
 
 /* ---------------- 12H TIME PARSER ---------------- */
-/*
-Supported:
-4pm
-4:30pm
-04:05 am
-at 7pm
-*/
 
 function extractTime12h(text: string): string | null {
   const match = text.match(/\b(1[0-2]|0?[1-9])(?::([0-5][0-9]))?\s?(am|pm)\b/i);
@@ -76,8 +69,6 @@ export async function POST(request: NextRequest) {
 
     const from = formData.get('From')?.toString() || '';
     const body = formData.get('Body')?.toString() || '';
-    const lower = body.toLowerCase();
-
     const phone = from.replace('whatsapp:', '');
 
     /* ---------- FIND OR CREATE USER ---------- */
@@ -90,9 +81,8 @@ export async function POST(request: NextRequest) {
       .eq('phone_number', phone)
       .maybeSingle();
 
-    if (existingUser) {
-      userId = existingUser.id;
-    } else {
+    if (existingUser) userId = existingUser.id;
+    else {
       const { data: newUser } = await supabase
         .from('users')
         .insert({ phone_number: phone })
@@ -111,9 +101,11 @@ export async function POST(request: NextRequest) {
       status: 'received'
     });
 
+    const lower = body.trim().toLowerCase();
+
     /* ---------- QUERY: TODAY ---------- */
 
-    if (lower.trim() === 'today') {
+    if (lower === 'today') {
       const today = getISTDate(0);
 
       const { data: events } = await supabase
@@ -123,63 +115,60 @@ export async function POST(request: NextRequest) {
         .eq('date', today)
         .order('time', { ascending: true });
 
-      if (!events || events.length === 0) {
+      if (!events || events.length === 0)
         return twiml('No events today');
-      }
 
-      const list = events.map(e => {
-        if (e.time) {
-          const [h, m] = e.time.split(':');
-          const hour = Number(h);
-          const ampm = hour >= 12 ? 'PM' : 'AM';
-          const displayHour = hour % 12 || 12;
-          return `• ${displayHour}:${m} ${ampm} — ${e.title}`;
-        }
-        return `• ${e.title}`;
-      }).join('\n');
+      const list = events.map(e =>
+        e.time
+          ? `• ${format12h(e.time)} — ${e.title}`
+          : `• ${e.title}`
+      ).join('\n');
 
       return twiml(`You have today:\n${list}`);
     }
 
-    /* ---------- DATE ---------- */
+    /* ---------- MULTI LINE EVENT CREATION ---------- */
 
-    let eventDate: string | null = null;
-    if (lower.includes('today')) eventDate = getISTDate(0);
-    if (lower.includes('tomorrow')) eventDate = getISTDate(1);
+    const lines = body.split('\n').map(l => l.trim()).filter(Boolean);
 
-    /* ---------- TIME ---------- */
+    let created: string[] = [];
 
-    const eventTime = extractTime12h(lower);
+    for (const line of lines) {
+      const text = line.toLowerCase();
 
-    /* ---------- TYPE ---------- */
+      let eventDate: string | null = null;
+      if (text.includes('today')) eventDate = getISTDate(0);
+      if (text.includes('tomorrow')) eventDate = getISTDate(1);
 
-    let type = 'task';
-    if (lower.includes('meeting')) type = 'meeting';
-    if (lower.includes('flight')) type = 'flight';
-    if (lower.includes('hotel')) type = 'hotel';
-    if (lower.includes('deadline')) type = 'deadline';
+      if (!eventDate) continue;
 
-    /* ---------- CREATE EVENT ---------- */
+      const eventTime = extractTime12h(text);
 
-    if (eventDate && userId) {
+      let type = 'task';
+      if (text.includes('meeting')) type = 'meeting';
+      if (text.includes('flight')) type = 'flight';
+      if (text.includes('hotel')) type = 'hotel';
+      if (text.includes('deadline')) type = 'deadline';
+
       await supabase.from('events').insert({
         user_id: userId,
         type,
-        title: body,
+        title: line,
         date: eventDate,
         time: eventTime,
-        raw_message: body,
+        raw_message: line,
         whatsapp_phone: phone
       });
 
-      const timeText = eventTime
-        ? ` at ${format12h(eventTime)}`
-        : '';
-
-      return twiml(`Added ${type} on ${eventDate}${timeText}`);
+      created.push(
+        `${type} on ${eventDate}${eventTime ? ` at ${format12h(eventTime)}` : ''}`
+      );
     }
 
-    return twiml('Include a date like: today or tomorrow');
+    if (created.length === 0)
+      return twiml('Include a date like: today or tomorrow');
+
+    return twiml(`Added:\n• ${created.join('\n• ')}`);
 
   } catch (error) {
     console.error(error);
