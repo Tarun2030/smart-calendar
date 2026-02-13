@@ -1,11 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
+/* Supabase server client (service role required) */
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
+);
+
 /**
- * Twilio sometimes hits GET (validation / retries / health checks)
- * MUST return TwiML XML — not plain text
+ * Twilio may hit GET — must return XML
  */
 export async function GET() {
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
@@ -15,16 +21,12 @@ export async function GET() {
 
   return new NextResponse(twiml, {
     status: 200,
-    headers: {
-      'Content-Type': 'text/xml',
-    },
+    headers: { 'Content-Type': 'text/xml' },
   });
 }
 
 /**
  * Main WhatsApp webhook
- * Twilio sends application/x-www-form-urlencoded
- * We MUST reply with TwiML XML
  */
 export async function POST(request: NextRequest) {
   try {
@@ -35,6 +37,13 @@ export async function POST(request: NextRequest) {
 
     console.log('Incoming WhatsApp message:', { from, body });
 
+    /* STORE RAW MESSAGE (guaranteed ingestion) */
+    await supabase.from('activity_logs').insert({
+      event_type: 'incoming_whatsapp',
+      payload: { from, body },
+      status: 'received'
+    });
+
     const replyText = `Received: ${body}`;
 
     const twiml = `<?xml version="1.0" encoding="UTF-8"?>
@@ -44,9 +53,7 @@ export async function POST(request: NextRequest) {
 
     return new NextResponse(twiml, {
       status: 200,
-      headers: {
-        'Content-Type': 'text/xml',
-      },
+      headers: { 'Content-Type': 'text/xml' },
     });
 
   } catch (error) {
@@ -59,16 +66,12 @@ export async function POST(request: NextRequest) {
 
     return new NextResponse(twiml, {
       status: 200,
-      headers: {
-        'Content-Type': 'text/xml',
-      },
+      headers: { 'Content-Type': 'text/xml' },
     });
   }
 }
 
-/**
- * Prevent XML breaking if user sends special chars
- */
+/* Prevent XML break */
 function escapeXml(unsafe: string) {
   return unsafe
     .replace(/&/g, '&amp;')
