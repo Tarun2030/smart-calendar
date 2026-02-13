@@ -11,7 +11,7 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
 
-/* ---------------- TWILIO XML HELPER ---------------- */
+/* ---------------- TWILIO XML ---------------- */
 
 function twiml(message: string) {
   return new NextResponse(`<?xml version="1.0" encoding="UTF-8"?>
@@ -23,8 +23,6 @@ function twiml(message: string) {
   });
 }
 
-/* ---------------- HEALTH CHECK ---------------- */
-
 export async function GET() {
   return twiml('Webhook active');
 }
@@ -33,10 +31,7 @@ export async function GET() {
 
 function getISTDate(offsetDays = 0) {
   const now = new Date();
-
-  const ist = new Date(
-    now.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' })
-  );
+  const ist = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
 
   ist.setDate(ist.getDate() + offsetDays);
 
@@ -47,21 +42,30 @@ function getISTDate(offsetDays = 0) {
   return `${year}-${month}-${day}`;
 }
 
-/* ---------------- GET TODAY EVENTS ---------------- */
+/* ---------------- 12H TIME PARSER ---------------- */
+/*
+Supported:
+4pm
+4:30pm
+04:05 am
+at 7pm
+*/
 
-async function getTodaysEvents(userId: string) {
-  const today = getISTDate(0);
+function extractTime12h(text: string): string | null {
+  const match = text.match(/\b(1[0-2]|0?[1-9])(?::([0-5][0-9]))?\s?(am|pm)\b/i);
+  if (!match) return null;
 
-  const { data } = await supabase
-    .from('events')
-    .select('title,type')
-    .eq('user_id', userId)
-    .eq('date', today)
-    .order('created_at', { ascending: true });
+  let hour = parseInt(match[1], 10);
+  const minute = match[2] ? parseInt(match[2], 10) : 0;
+  const ampm = match[3].toLowerCase();
 
-  if (!data || data.length === 0) return null;
+  if (ampm === 'pm' && hour !== 12) hour += 12;
+  if (ampm === 'am' && hour === 12) hour = 0;
 
-  return data.map(e => `• ${e.title}`).join('\n');
+  const hh = String(hour).padStart(2, '0');
+  const mm = String(minute).padStart(2, '0');
+
+  return `${hh}:${mm}:00`;
 }
 
 /* ---------------- MAIN WEBHOOK ---------------- */
@@ -72,15 +76,7 @@ export async function POST(request: NextRequest) {
 
     const from = formData.get('From')?.toString() || '';
     const body = formData.get('Body')?.toString() || '';
-    const lower = body
-  .toLowerCase()
-  .replace(/\s+/g, ' ')
-  .trim();
-
-
-    console.log('Incoming WhatsApp message:', { from, body });
-
-    /* ---------- NORMALIZE PHONE ---------- */
+    const lower = body.toLowerCase();
 
     const phone = from.replace('whatsapp:', '');
 
@@ -106,7 +102,7 @@ export async function POST(request: NextRequest) {
       userId = newUser?.id || null;
     }
 
-    /* ---------- STORE RAW MESSAGE ---------- */
+    /* ---------- LOG MESSAGE ---------- */
 
     await supabase.from('activity_logs').insert({
       user_id: userId,
@@ -115,25 +111,47 @@ export async function POST(request: NextRequest) {
       status: 'received'
     });
 
-    /* ---------- COMMAND: TODAY ---------- */
+    /* ---------- QUERY: TODAY ---------- */
 
-    if (lower.startsWith('today') && userId) {
-      const list = await getTodaysEvents(userId);
+    if (lower.trim() === 'today') {
+      const today = getISTDate(0);
 
-      if (!list)
+      const { data: events } = await supabase
+        .from('events')
+        .select('title, time, type')
+        .eq('user_id', userId)
+        .eq('date', today)
+        .order('time', { ascending: true });
+
+      if (!events || events.length === 0) {
         return twiml('No events today');
+      }
+
+      const list = events.map(e => {
+        if (e.time) {
+          const [h, m] = e.time.split(':');
+          const hour = Number(h);
+          const ampm = hour >= 12 ? 'PM' : 'AM';
+          const displayHour = hour % 12 || 12;
+          return `• ${displayHour}:${m} ${ampm} — ${e.title}`;
+        }
+        return `• ${e.title}`;
+      }).join('\n');
 
       return twiml(`You have today:\n${list}`);
     }
 
-    /* ---------- DATE PARSER ---------- */
+    /* ---------- DATE ---------- */
 
     let eventDate: string | null = null;
-
     if (lower.includes('today')) eventDate = getISTDate(0);
     if (lower.includes('tomorrow')) eventDate = getISTDate(1);
 
-    /* ---------- TYPE PARSER ---------- */
+    /* ---------- TIME ---------- */
+
+    const eventTime = extractTime12h(lower);
+
+    /* ---------- TYPE ---------- */
 
     let type = 'task';
     if (lower.includes('meeting')) type = 'meeting';
@@ -143,29 +161,40 @@ export async function POST(request: NextRequest) {
 
     /* ---------- CREATE EVENT ---------- */
 
-    let replyText = '';
-
     if (eventDate && userId) {
       await supabase.from('events').insert({
         user_id: userId,
         type,
         title: body,
         date: eventDate,
+        time: eventTime,
         raw_message: body,
         whatsapp_phone: phone
       });
 
-      replyText = `Added ${type} on ${eventDate}`;
-    } else {
-      replyText = 'Please mention today or tomorrow so I can save it';
+      const timeText = eventTime
+        ? ` at ${format12h(eventTime)}`
+        : '';
+
+      return twiml(`Added ${type} on ${eventDate}${timeText}`);
     }
 
-    return twiml(replyText);
+    return twiml('Include a date like: today or tomorrow');
 
   } catch (error) {
-    console.error('Webhook error:', error);
-    return twiml('Server error. Please try again.');
+    console.error(error);
+    return twiml('Server error. Try again.');
   }
+}
+
+/* ---------------- FORMATTER ---------------- */
+
+function format12h(time: string) {
+  const [h, m] = time.split(':');
+  const hour = Number(h);
+  const ampm = hour >= 12 ? 'PM' : 'AM';
+  const displayHour = hour % 12 || 12;
+  return `${displayHour}:${m} ${ampm}`;
 }
 
 /* ---------------- XML SAFETY ---------------- */
