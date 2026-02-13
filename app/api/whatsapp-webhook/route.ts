@@ -72,7 +72,11 @@ export async function POST(request: NextRequest) {
 
     const from = formData.get('From')?.toString() || '';
     const body = formData.get('Body')?.toString() || '';
-    const lower = body.toLowerCase().trim();
+    const lower = body
+  .toLowerCase()
+  .replace(/\s+/g, ' ')
+  .trim();
+
 
     console.log('Incoming WhatsApp message:', { from, body });
 
@@ -113,7 +117,7 @@ export async function POST(request: NextRequest) {
 
     /* ---------- COMMAND: TODAY ---------- */
 
-    if (lower === 'today' && userId) {
+    if (lower.startsWith('today') && userId) {
       const list = await getTodaysEvents(userId);
 
       if (!list)
