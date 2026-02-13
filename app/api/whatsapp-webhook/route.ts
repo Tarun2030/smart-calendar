@@ -4,23 +4,30 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 /**
- * Health check
- * Visiting in browser should show: alive
+ * Twilio sometimes hits GET (validation / retries / health checks)
+ * MUST return TwiML XML — not plain text
  */
 export async function GET() {
-  return new NextResponse('alive', {
+  const twiml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Message>Webhook active</Message>
+</Response>`;
+
+  return new NextResponse(twiml, {
     status: 200,
-    headers: { 'Content-Type': 'text/plain' },
+    headers: {
+      'Content-Type': 'text/xml',
+    },
   });
 }
 
 /**
- * Twilio WhatsApp webhook
- * Must return TwiML XML — not JSON
+ * Main WhatsApp webhook
+ * Twilio sends application/x-www-form-urlencoded
+ * We MUST reply with TwiML XML
  */
 export async function POST(request: NextRequest) {
   try {
-    // Twilio sends application/x-www-form-urlencoded
     const formData = await request.formData();
 
     const from = formData.get('From')?.toString() || '';
@@ -28,12 +35,11 @@ export async function POST(request: NextRequest) {
 
     console.log('Incoming WhatsApp message:', { from, body });
 
-    // Simple reply (we will replace with AI later)
     const replyText = `Received: ${body}`;
 
     const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Message>${escapeXml(replyText)}</Message>
+  <Message>${escapeXml(replyText)}</Message>
 </Response>`;
 
     return new NextResponse(twiml, {
@@ -48,12 +54,14 @@ export async function POST(request: NextRequest) {
 
     const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Message>Server error. Please try again.</Message>
+  <Message>Server error. Please try again.</Message>
 </Response>`;
 
     return new NextResponse(twiml, {
       status: 200,
-      headers: { 'Content-Type': 'text/xml' },
+      headers: {
+        'Content-Type': 'text/xml',
+      },
     });
   }
 }
