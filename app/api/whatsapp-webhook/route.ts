@@ -29,6 +29,24 @@ export async function GET() {
   return twiml('Webhook active');
 }
 
+/* ---------------- IST DATE ---------------- */
+
+function getISTDate(offsetDays = 0) {
+  const now = new Date();
+
+  const ist = new Date(
+    now.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' })
+  );
+
+  ist.setDate(ist.getDate() + offsetDays);
+
+  const year = ist.getFullYear();
+  const month = String(ist.getMonth() + 1).padStart(2, '0');
+  const day = String(ist.getDate()).padStart(2, '0');
+
+  return `${year}-${month}-${day}`;
+}
+
 /* ---------------- MAIN WEBHOOK ---------------- */
 
 export async function POST(request: NextRequest) {
@@ -37,6 +55,7 @@ export async function POST(request: NextRequest) {
 
     const from = formData.get('From')?.toString() || '';
     const body = formData.get('Body')?.toString() || '';
+    const lower = body.toLowerCase();
 
     console.log('Incoming WhatsApp message:', { from, body });
 
@@ -75,29 +94,14 @@ export async function POST(request: NextRequest) {
       status: 'received'
     });
 
-    /* ---------- BASIC EVENT PARSER ---------- */
-
-    let replyText = 'Saved.';
-    const lower = body.toLowerCase();
+    /* ---------- DATE PARSER ---------- */
 
     let eventDate: string | null = null;
 
-function getISTDate(offsetDays = 0) {
-  const now = new Date();
+    if (lower.includes('today')) eventDate = getISTDate(0);
+    if (lower.includes('tomorrow')) eventDate = getISTDate(1);
 
-  const ist = new Date(
-    now.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' })
-  );
-
-  ist.setDate(ist.getDate() + offsetDays);
-
-  const year = ist.getFullYear();
-  const month = String(ist.getMonth() + 1).padStart(2, '0');
-  const day = String(ist.getDate()).padStart(2, '0');
-
-  return `${year}-${month}-${day}`;
-}
-
+    /* ---------- TYPE PARSER ---------- */
 
     let type = 'task';
     if (lower.includes('meeting')) type = 'meeting';
@@ -106,6 +110,8 @@ function getISTDate(offsetDays = 0) {
     if (lower.includes('deadline')) type = 'deadline';
 
     /* ---------- CREATE EVENT ---------- */
+
+    let replyText = '';
 
     if (eventDate && userId) {
       await supabase.from('events').insert({
@@ -119,7 +125,7 @@ function getISTDate(offsetDays = 0) {
 
       replyText = `Added ${type} on ${eventDate}`;
     } else {
-      replyText = 'Tell me date (today / tomorrow) to save event';
+      replyText = 'Please mention today or tomorrow so I can save it';
     }
 
     return twiml(replyText);
