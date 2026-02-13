@@ -27,17 +27,33 @@ export async function GET() {
   return twiml('Webhook active');
 }
 
-/* ---------------- IST DATE ---------------- */
+/* ---------------- HUMAN DAY DATE (MIDNIGHT FIX) ---------------- */
+/*
+00:00–04:59 AM still treated as previous day
+*/
+
+function getHumanBaseDate(): Date {
+  const now = new Date();
+
+  const ist = new Date(
+    now.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' })
+  );
+
+  if (ist.getHours() < 5) {
+    ist.setDate(ist.getDate() - 1);
+  }
+
+  return ist;
+}
 
 function getISTDate(offsetDays = 0) {
-  const now = new Date();
-  const ist = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+  const base = getHumanBaseDate();
 
-  ist.setDate(ist.getDate() + offsetDays);
+  base.setDate(base.getDate() + offsetDays);
 
-  const year = ist.getFullYear();
-  const month = String(ist.getMonth() + 1).padStart(2, '0');
-  const day = String(ist.getDate()).padStart(2, '0');
+  const year = base.getFullYear();
+  const month = String(base.getMonth() + 1).padStart(2, '0');
+  const day = String(base.getDate()).padStart(2, '0');
 
   return `${year}-${month}-${day}`;
 }
