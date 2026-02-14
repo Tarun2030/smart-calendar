@@ -27,35 +27,35 @@ export async function GET() {
   return twiml('Webhook active');
 }
 
-/* ---------------- IST DATE SAFE ---------------- */
-/*
-Human day: before 5AM counts as previous day
-No Date mutation, deterministic for Vercel
-*/
+/* =========================================================
+   HUMAN DAY ENGINE  (single clock per request)
+   00:00–04:59 counts as previous day
+========================================================= */
 
-function getISTNow(): Date {
+function getHumanTodayIST(): Date {
   const utc = new Date();
-  const istOffset = 5.5 * 60 * 60 * 1000;
-  return new Date(utc.getTime() + istOffset);
+  const ist = new Date(utc.getTime() + 5.5 * 60 * 60 * 1000);
+
+  if (ist.getHours() < 5) {
+    ist.setDate(ist.getDate() - 1);
+  }
+
+  ist.setHours(0, 0, 0, 0);
+  return ist;
 }
 
-function getISTDate(offsetDays = 0) {
-  const ist = getISTNow();
+function addDays(base: Date, days: number) {
+  const d = new Date(base.getTime());
+  d.setDate(d.getDate() + days);
 
-  const base = new Date(ist.getTime());
-  if (base.getHours() < 5) base.setDate(base.getDate() - 1);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const da = String(d.getDate()).padStart(2, '0');
 
-  const target = new Date(base.getTime());
-  target.setDate(target.getDate() + offsetDays);
-
-  const y = target.getFullYear();
-  const m = String(target.getMonth() + 1).padStart(2, '0');
-  const d = String(target.getDate()).padStart(2, '0');
-
-  return `${y}-${m}-${d}`;
+  return `${y}-${m}-${da}`;
 }
 
-/* ---------------- TIME PARSER ---------------- */
+/* ---------------- 12H TIME PARSER ---------------- */
 
 function extractTime12h(text: string): string | null {
   const match = text.match(/\b(1[0-2]|0?[1-9])(?::([0-5][0-9]))?\s?(am|pm)\b/i);
@@ -71,6 +71,16 @@ function extractTime12h(text: string): string | null {
   return `${String(hour).padStart(2,'0')}:${String(minute).padStart(2,'0')}:00`;
 }
 
+/* ---------------- FORMATTER ---------------- */
+
+function format12h(time: string) {
+  const [h, m] = time.split(':');
+  const hour = Number(h);
+  const ampm = hour >= 12 ? 'PM' : 'AM';
+  const displayHour = hour % 12 || 12;
+  return `${displayHour}:${m} ${ampm}`;
+}
+
 /* ---------------- MAIN WEBHOOK ---------------- */
 
 export async function POST(request: NextRequest) {
@@ -80,30 +90,33 @@ export async function POST(request: NextRequest) {
     const from = formData.get('From')?.toString() || '';
     const body = formData.get('Body')?.toString() || '';
     const phone = from.replace('whatsapp:', '');
-    const lower = body.trim().toLowerCase();
 
-    /* ---------- USER ---------- */
+    /* ---------- FREEZE HUMAN DAY ---------- */
+
+    const humanToday = getHumanTodayIST();
+
+    /* ---------- FIND OR CREATE USER ---------- */
 
     let userId: string | null = null;
 
-    const { data: existing } = await supabase
+    const { data: existingUser } = await supabase
       .from('users')
       .select('id')
       .eq('phone_number', phone)
       .maybeSingle();
 
-    if (existing) userId = existing.id;
+    if (existingUser) userId = existingUser.id;
     else {
-      const { data } = await supabase
+      const { data: newUser } = await supabase
         .from('users')
         .insert({ phone_number: phone })
         .select('id')
         .single();
 
-      userId = data?.id || null;
+      userId = newUser?.id || null;
     }
 
-    /* ---------- LOG ---------- */
+    /* ---------- LOG MESSAGE ---------- */
 
     await supabase.from('activity_logs').insert({
       user_id: userId,
@@ -112,14 +125,16 @@ export async function POST(request: NextRequest) {
       status: 'received'
     });
 
-    /* ---------- TODAY QUERY ---------- */
+    const lower = body.trim().toLowerCase();
+
+    /* ---------- QUERY TODAY ---------- */
 
     if (lower === 'today') {
-      const today = getISTDate(0);
+      const today = addDays(humanToday, 0);
 
       const { data: events } = await supabase
         .from('events')
-        .select('title,time,type')
+        .select('title, time, type')
         .eq('user_id', userId)
         .eq('date', today)
         .order('time', { ascending: true });
@@ -134,68 +149,67 @@ export async function POST(request: NextRequest) {
       return twiml(`You have today:\n${list}`);
     }
 
-    /* ---------- MULTILINE EVENTS ---------- */
+    /* ---------- MULTI LINE EVENT CREATION ---------- */
 
     const lines = body.split('\n').map(l => l.trim()).filter(Boolean);
-    const created: string[] = [];
+    let created: string[] = [];
 
     for (const line of lines) {
       const text = line.toLowerCase();
 
-      let date: string | null = null;
-      if (text.includes('today')) date = getISTDate(0);
-      if (text.includes('tomorrow')) date = getISTDate(1);
-      if (!date) continue;
+      let eventDate: string | null = null;
 
-      const time = extractTime12h(text);
+      if (text.includes('day after tomorrow'))
+        eventDate = addDays(humanToday, 2);
+      else if (text.includes('tomorrow'))
+        eventDate = addDays(humanToday, 1);
+      else if (text.includes('today'))
+        eventDate = addDays(humanToday, 0);
+
+      if (!eventDate) continue;
+
+      const eventTime = extractTime12h(text);
 
       let type = 'task';
       if (text.includes('meeting')) type = 'meeting';
       if (text.includes('flight')) type = 'flight';
       if (text.includes('hotel')) type = 'hotel';
       if (text.includes('deadline')) type = 'deadline';
+      if (text.includes('call')) type = 'call';
 
       await supabase.from('events').insert({
         user_id: userId,
         type,
         title: line,
-        date,
-        time,
+        date: eventDate,
+        time: eventTime,
         raw_message: line,
         whatsapp_phone: phone
       });
 
-      created.push(`${type} on ${date}${time ? ` at ${format12h(time)}` : ''}`);
+      created.push(
+        `${type} on ${eventDate}${eventTime ? ` at ${format12h(eventTime)}` : ''}`
+      );
     }
 
-    if (!created.length)
+    if (created.length === 0)
       return twiml('Include a date like: today or tomorrow');
 
     return twiml(`Added:\n• ${created.join('\n• ')}`);
 
-  } catch (err) {
-    console.error(err);
+  } catch (error) {
+    console.error(error);
     return twiml('Server error. Try again.');
   }
-}
-
-/* ---------------- FORMAT ---------------- */
-
-function format12h(time: string) {
-  const [h, m] = time.split(':');
-  const hour = Number(h);
-  const ampm = hour >= 12 ? 'PM' : 'AM';
-  const display = hour % 12 || 12;
-  return `${display}:${m} ${ampm}`;
 }
 
 /* ---------------- XML SAFETY ---------------- */
 
 function escapeXml(unsafe: string) {
   return unsafe
-    .replace(/&/g,'&amp;')
-    .replace(/</g,'&lt;')
-    .replace(/>/g,'&gt;')
-    .replace(/"/g,'&quot;')
-    .replace(/'/g,'&apos;');
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
 }
