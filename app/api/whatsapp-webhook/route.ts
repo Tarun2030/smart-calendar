@@ -27,35 +27,30 @@ export async function GET() {
   return twiml('Webhook active');
 }
 
-/* =========================================================
-   HUMAN DAY ENGINE  (single clock per request)
-   00:00–04:59 counts as previous day
-========================================================= */
+/* ---------------- HUMAN DAY (00:00–04:59 FIX) ---------------- */
 
-function getHumanTodayIST(): Date {
-  const utc = new Date();
-  const ist = new Date(utc.getTime() + 5.5 * 60 * 60 * 1000);
+function getHumanBaseDate(): Date {
+  const now = new Date();
+  const ist = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
 
-  if (ist.getHours() < 5) {
-    ist.setDate(ist.getDate() - 1);
-  }
+  // After midnight but before 5 AM still counts as yesterday
+  if (ist.getHours() < 5) ist.setDate(ist.getDate() - 1);
 
-  ist.setHours(0, 0, 0, 0);
   return ist;
 }
 
-function addDays(base: Date, days: number) {
-  const d = new Date(base.getTime());
-  d.setDate(d.getDate() + days);
+function getISTDate(offsetDays = 0) {
+  const base = getHumanBaseDate();
+  base.setDate(base.getDate() + offsetDays);
 
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const da = String(d.getDate()).padStart(2, '0');
+  const y = base.getFullYear();
+  const m = String(base.getMonth() + 1).padStart(2, '0');
+  const d = String(base.getDate()).padStart(2, '0');
 
-  return `${y}-${m}-${da}`;
+  return `${y}-${m}-${d}`;
 }
 
-/* ---------------- 12H TIME PARSER ---------------- */
+/* ---------------- TIME PARSER ---------------- */
 
 function extractTime12h(text: string): string | null {
   const match = text.match(/\b(1[0-2]|0?[1-9])(?::([0-5][0-9]))?\s?(am|pm)\b/i);
@@ -68,17 +63,35 @@ function extractTime12h(text: string): string | null {
   if (ampm === 'pm' && hour !== 12) hour += 12;
   if (ampm === 'am' && hour === 12) hour = 0;
 
-  return `${String(hour).padStart(2,'0')}:${String(minute).padStart(2,'0')}:00`;
+  return `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}:00`;
 }
 
-/* ---------------- FORMATTER ---------------- */
+/* ---------------- INTENT DETECTOR ---------------- */
 
-function format12h(time: string) {
-  const [h, m] = time.split(':');
-  const hour = Number(h);
-  const ampm = hour >= 12 ? 'PM' : 'AM';
-  const displayHour = hour % 12 || 12;
-  return `${displayHour}:${m} ${ampm}`;
+function detectIntent(text: string) {
+  const t = text.trim().toLowerCase();
+
+  if (
+    t.includes('schedule') ||
+    t.includes('next') ||
+    t.includes('upcoming') ||
+    t.includes('show') ||
+    t.includes('list') ||
+    t === 'today' ||
+    t === 'tomorrow' ||
+    t === 'day after tomorrow'
+  ) return 'QUERY';
+
+  if (
+    t.match(/\d{1,2}(:\d{2})?\s?(am|pm)/) ||
+    t.includes('meeting') ||
+    t.includes('call') ||
+    t.includes('flight') ||
+    t.includes('hotel') ||
+    t.includes('deadline')
+  ) return 'CREATE';
+
+  return 'UNKNOWN';
 }
 
 /* ---------------- MAIN WEBHOOK ---------------- */
@@ -89,11 +102,8 @@ export async function POST(request: NextRequest) {
 
     const from = formData.get('From')?.toString() || '';
     const body = formData.get('Body')?.toString() || '';
+    const lower = body.trim().toLowerCase();
     const phone = from.replace('whatsapp:', '');
-
-    /* ---------- FREEZE HUMAN DAY ---------- */
-
-    const humanToday = getHumanTodayIST();
 
     /* ---------- FIND OR CREATE USER ---------- */
 
@@ -125,31 +135,52 @@ export async function POST(request: NextRequest) {
       status: 'received'
     });
 
-    const lower = body.trim().toLowerCase();
+    const intent = detectIntent(lower);
 
-    /* ---------- QUERY TODAY ---------- */
+    /* ================= QUERY MODE ================= */
 
-    if (lower === 'today') {
-      const today = addDays(humanToday, 0);
+    if (intent === 'QUERY') {
+      const start = getISTDate(0);
+      const endDate = new Date(start);
+      endDate.setDate(endDate.getDate() + 7);
+      const end = endDate.toISOString().split('T')[0];
 
       const { data: events } = await supabase
         .from('events')
-        .select('title, time, type')
+        .select('date, title, time')
         .eq('user_id', userId)
-        .eq('date', today)
+        .gte('date', start)
+        .lte('date', end)
+        .order('date', { ascending: true })
         .order('time', { ascending: true });
 
       if (!events || events.length === 0)
-        return twiml('No events today');
+        return twiml('No upcoming events');
 
-      const list = events.map(e =>
-        e.time ? `• ${format12h(e.time)} — ${e.title}` : `• ${e.title}`
-      ).join('\n');
+      let msg = 'Upcoming:\n';
 
-      return twiml(`You have today:\n${list}`);
+      const grouped = events.reduce((acc: any, e) => {
+        if (!acc[e.date]) acc[e.date] = [];
+        acc[e.date].push(e);
+        return acc;
+      }, {});
+
+      for (const d in grouped) {
+        msg += `\n${d}\n`;
+        grouped[d].forEach((e: any) => {
+          msg += e.time
+            ? `• ${format12h(e.time)} — ${e.title}\n`
+            : `• ${e.title}\n`;
+        });
+      }
+
+      return twiml(msg.trim());
     }
 
-    /* ---------- MULTI LINE EVENT CREATION ---------- */
+    /* ================= CREATE MODE ================= */
+
+    if (intent !== 'CREATE')
+      return twiml('Try: meeting tomorrow 4pm');
 
     const lines = body.split('\n').map(l => l.trim()).filter(Boolean);
     let created: string[] = [];
@@ -158,13 +189,9 @@ export async function POST(request: NextRequest) {
       const text = line.toLowerCase();
 
       let eventDate: string | null = null;
-
-      if (text.includes('day after tomorrow'))
-        eventDate = addDays(humanToday, 2);
-      else if (text.includes('tomorrow'))
-        eventDate = addDays(humanToday, 1);
-      else if (text.includes('today'))
-        eventDate = addDays(humanToday, 0);
+      if (text.includes('today')) eventDate = getISTDate(0);
+      if (text.includes('tomorrow')) eventDate = getISTDate(1);
+      if (text.includes('day after tomorrow')) eventDate = getISTDate(2);
 
       if (!eventDate) continue;
 
@@ -175,7 +202,6 @@ export async function POST(request: NextRequest) {
       if (text.includes('flight')) type = 'flight';
       if (text.includes('hotel')) type = 'hotel';
       if (text.includes('deadline')) type = 'deadline';
-      if (text.includes('call')) type = 'call';
 
       await supabase.from('events').insert({
         user_id: userId,
@@ -201,6 +227,16 @@ export async function POST(request: NextRequest) {
     console.error(error);
     return twiml('Server error. Try again.');
   }
+}
+
+/* ---------------- FORMATTER ---------------- */
+
+function format12h(time: string) {
+  const [h, m] = time.split(':');
+  const hour = Number(h);
+  const ampm = hour >= 12 ? 'PM' : 'AM';
+  const displayHour = hour % 12 || 12;
+  return `${displayHour}:${m} ${ampm}`;
 }
 
 /* ---------------- XML SAFETY ---------------- */
