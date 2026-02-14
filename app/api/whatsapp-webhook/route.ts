@@ -28,27 +28,17 @@ export async function GET() {
 }
 
 /* ---------------- HUMAN DAY DATE (MIDNIGHT FIX) ---------------- */
-/*
-00:00–04:59 AM still treated as previous day
-*/
 
 function getHumanBaseDate(): Date {
   const now = new Date();
+  const ist = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
 
-  const ist = new Date(
-    now.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' })
-  );
-
-  if (ist.getHours() < 5) {
-    ist.setDate(ist.getDate() - 1);
-  }
-
+  if (ist.getHours() < 5) ist.setDate(ist.getDate() - 1);
   return ist;
 }
 
 function getISTDate(offsetDays = 0) {
   const base = getHumanBaseDate();
-
   base.setDate(base.getDate() + offsetDays);
 
   const year = base.getFullYear();
@@ -71,10 +61,17 @@ function extractTime12h(text: string): string | null {
   if (ampm === 'pm' && hour !== 12) hour += 12;
   if (ampm === 'am' && hour === 12) hour = 0;
 
-  const hh = String(hour).padStart(2, '0');
-  const mm = String(minute).padStart(2, '0');
+  return `${String(hour).padStart(2,'0')}:${String(minute).padStart(2,'0')}:00`;
+}
 
-  return `${hh}:${mm}:00`;
+/* ---------------- FORMATTER ---------------- */
+
+function format12h(time: string) {
+  const [h, m] = time.split(':');
+  const hour = Number(h);
+  const ampm = hour >= 12 ? 'PM' : 'AM';
+  const displayHour = hour % 12 || 12;
+  return `${displayHour}:${m} ${ampm}`;
 }
 
 /* ---------------- MAIN WEBHOOK ---------------- */
@@ -119,34 +116,50 @@ export async function POST(request: NextRequest) {
 
     const lower = body.trim().toLowerCase();
 
-    /* ---------- QUERY: TODAY ---------- */
+    /* ---------------- SMART QUERY ENGINE ---------------- */
 
-    if (lower === 'today') {
-      const today = getISTDate(0);
+    async function listEvents(startOffset: number, endOffset: number, label: string) {
+      const start = getISTDate(startOffset);
+      const end = getISTDate(endOffset);
 
       const { data: events } = await supabase
         .from('events')
-        .select('title, time, type')
+        .select('title, time, date')
         .eq('user_id', userId)
-        .eq('date', today)
+        .gte('date', start)
+        .lte('date', end)
+        .order('date', { ascending: true })
         .order('time', { ascending: true });
 
       if (!events || events.length === 0)
-        return twiml('No events today');
+        return twiml(`No events ${label}`);
 
-      const list = events.map(e =>
-        e.time
-          ? `• ${format12h(e.time)} — ${e.title}`
-          : `• ${e.title}`
-      ).join('\n');
+      let currentDate = '';
+      let text = `Your ${label}:\n`;
 
-      return twiml(`You have today:\n${list}`);
+      for (const e of events) {
+        if (e.date !== currentDate) {
+          currentDate = e.date;
+          text += `\n${currentDate}\n`;
+        }
+
+        text += e.time
+          ? `• ${format12h(e.time)} — ${e.title}\n`
+          : `• ${e.title}\n`;
+      }
+
+      return twiml(text.trim());
     }
 
-    /* ---------- MULTI LINE EVENT CREATION ---------- */
+    if (lower === 'today') return await listEvents(0, 0, 'today');
+    if (lower === 'tomorrow') return await listEvents(1, 1, 'tomorrow');
+    if (lower === 'day after tomorrow') return await listEvents(2, 2, 'day after tomorrow');
+    if (lower.includes('next 7') || lower === 'schedule')
+      return await listEvents(0, 7, 'next 7 days');
+
+    /* ---------------- MULTI LINE EVENT CREATION ---------------- */
 
     const lines = body.split('\n').map(l => l.trim()).filter(Boolean);
-
     let created: string[] = [];
 
     for (const line of lines) {
@@ -155,6 +168,7 @@ export async function POST(request: NextRequest) {
       let eventDate: string | null = null;
       if (text.includes('today')) eventDate = getISTDate(0);
       if (text.includes('tomorrow')) eventDate = getISTDate(1);
+      if (text.includes('day after tomorrow')) eventDate = getISTDate(2);
 
       if (!eventDate) continue;
 
@@ -176,9 +190,7 @@ export async function POST(request: NextRequest) {
         whatsapp_phone: phone
       });
 
-      created.push(
-        `${type} on ${eventDate}${eventTime ? ` at ${format12h(eventTime)}` : ''}`
-      );
+      created.push(`${type} on ${eventDate}${eventTime ? ` at ${format12h(eventTime)}` : ''}`);
     }
 
     if (created.length === 0)
@@ -190,16 +202,6 @@ export async function POST(request: NextRequest) {
     console.error(error);
     return twiml('Server error. Try again.');
   }
-}
-
-/* ---------------- FORMATTER ---------------- */
-
-function format12h(time: string) {
-  const [h, m] = time.split(':');
-  const hour = Number(h);
-  const ampm = hour >= 12 ? 'PM' : 'AM';
-  const displayHour = hour % 12 || 12;
-  return `${displayHour}:${m} ${ampm}`;
 }
 
 /* ---------------- XML SAFETY ---------------- */
