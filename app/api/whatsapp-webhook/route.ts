@@ -33,9 +33,7 @@ function getHumanBaseDate(): Date {
   const now = new Date();
   const ist = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
 
-  // After midnight but before 5 AM still counts as yesterday
   if (ist.getHours() < 5) ist.setDate(ist.getDate() - 1);
-
   return ist;
 }
 
@@ -189,9 +187,9 @@ export async function POST(request: NextRequest) {
       const text = line.toLowerCase();
 
       let eventDate: string | null = null;
-      if (text.includes('today')) eventDate = getISTDate(0);
-      if (text.includes('tomorrow')) eventDate = getISTDate(1);
       if (text.includes('day after tomorrow')) eventDate = getISTDate(2);
+      else if (text.includes('tomorrow')) eventDate = getISTDate(1);
+      else if (text.includes('today')) eventDate = getISTDate(0);
 
       if (!eventDate) continue;
 
@@ -202,6 +200,22 @@ export async function POST(request: NextRequest) {
       if (text.includes('flight')) type = 'flight';
       if (text.includes('hotel')) type = 'hotel';
       if (text.includes('deadline')) type = 'deadline';
+
+      /* ---------- IDEMPOTENCY CHECK ---------- */
+
+      const { data: duplicate } = await supabase
+        .from('events')
+        .select('id')
+        .eq('user_id', userId)
+        .eq('title', line)
+        .eq('date', eventDate)
+        .eq('time', eventTime)
+        .limit(1)
+        .maybeSingle();
+
+      if (duplicate) continue;
+
+      /* ---------- INSERT ---------- */
 
       await supabase.from('events').insert({
         user_id: userId,
@@ -219,7 +233,7 @@ export async function POST(request: NextRequest) {
     }
 
     if (created.length === 0)
-      return twiml('Include a date like: today or tomorrow');
+      return twiml('Nothing new added (already exists)');
 
     return twiml(`Added:\n• ${created.join('\n• ')}`);
 
