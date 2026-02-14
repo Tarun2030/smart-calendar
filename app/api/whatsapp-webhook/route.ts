@@ -64,6 +64,18 @@ function extractTime12h(text: string): string | null {
   return `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}:00`;
 }
 
+/* ---------------- REMINDER TIME ---------------- */
+/* default: 30 minutes before event */
+
+function buildReminderTimestamp(date: string, time: string | null) {
+  if (!time) return null;
+
+  const eventDateTime = new Date(`${date}T${time}+05:30`);
+  eventDateTime.setMinutes(eventDateTime.getMinutes() - 30);
+
+  return eventDateTime.toISOString();
+}
+
 /* ---------------- INTENT DETECTOR ---------------- */
 
 function detectIntent(text: string) {
@@ -215,7 +227,9 @@ export async function POST(request: NextRequest) {
 
       if (duplicate) continue;
 
-      /* ---------- INSERT ---------- */
+      /* ---------- INSERT WITH REMINDER ---------- */
+
+      const reminderAt = buildReminderTimestamp(eventDate, eventTime);
 
       await supabase.from('events').insert({
         user_id: userId,
@@ -223,6 +237,8 @@ export async function POST(request: NextRequest) {
         title: line,
         date: eventDate,
         time: eventTime,
+        reminder_at: reminderAt,
+        reminder_sent: false,
         raw_message: line,
         whatsapp_phone: phone
       });
