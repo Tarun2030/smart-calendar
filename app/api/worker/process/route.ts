@@ -5,6 +5,9 @@ import { generateDailyDigestPDF } from '@/lib/integrations/pdf-generator'
 import { sendWhatsAppMessage } from '@/lib/integrations/twilio'
 import { sendEmail } from '@/lib/integrations/resend'
 import type { Event } from '@/lib/types/event.types'
+export const runtime = 'nodejs'
+export const dynamic = 'force-dynamic'
+
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -129,7 +132,11 @@ export async function GET() {
       })
     }
 
-    return NextResponse.json({ status: 'worker_failed' }, { status: 500 })
+    return new Response(
+  JSON.stringify({ status: 'worker_failed' }),
+  { status: 500, headers: { 'Content-Type': 'application/json' } }
+)
+
   }
 }
 import { NextResponse } from 'next/server'
