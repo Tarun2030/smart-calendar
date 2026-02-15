@@ -6,30 +6,18 @@ import { sendWhatsAppMessage } from '@/lib/integrations/twilio'
 import { sendEmail } from '@/lib/integrations/resend'
 import type { Event } from '@/lib/types/event.types'
 
-export const runtime = 'nodejs'   // critical for Buffer + PDF
-
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 )
 
-/* -------------------------------------------------- */
-/* TIME WINDOW — 7:00 PM IST = 13:30 UTC              */
-/* allow 5 min tolerance because cron is not exact    */
-/* -------------------------------------------------- */
-
+/* 7:00 PM IST = 13:30 UTC */
 function isDigestTime(): boolean {
   const now = new Date()
-  const h = now.getUTCHours()
-  const m = now.getUTCMinutes()
-
-  return h === 13 && m >= 30 && m <= 35
+  return now.getUTCHours() === 13 && now.getUTCMinutes() >= 30 && now.getUTCMinutes() <= 40
 }
 
-/* -------------------------------------------------- */
-
 export async function GET() {
-
   let job: any = null
 
   try {
@@ -38,22 +26,25 @@ export async function GET() {
     const { data, error } = await supabase.rpc('get_next_cron_job')
 
     if (error) {
-      console.error('RPC ERROR', error)
-      return NextResponse.json({ status: 'rpc_error' })
+      console.error(error)
+      return NextResponse.json({ status: 'rpc_error', error })
     }
 
-    if (!data) {
+    if (!data || data.length === 0) {
       return NextResponse.json({ status: 'no_jobs' })
     }
 
-    job = data
+    /* CRITICAL FIX — EXTRACT FIRST ROW */
+    job = data[0]
+
+    console.log("CLAIMED JOB:", job)
 
     if (job.job_type !== 'daily_digest') {
       await supabase.rpc('fail_cron_job', {
         job_id: job.id,
         job_error: `unknown_job_${job.job_type}`
       })
-      return NextResponse.json({ status: 'unknown_job' })
+      return NextResponse.json({ status: 'unknown_job', received: job })
     }
 
     /* STEP 2 — TIME CHECK */
@@ -65,7 +56,7 @@ export async function GET() {
       return NextResponse.json({ status: 'skipped_time_window' })
     }
 
-    /* STEP 3 — PROCESS USERS */
+    /* STEP 3 — RUN DIGEST */
     const users = await getActiveUsers()
 
     if (!users || users.length === 0) {
@@ -80,42 +71,38 @@ export async function GET() {
 
     for (const user of users) {
       try {
-
         const events: Event[] = await getUpcomingEvents(user.id, 7)
-        if (!events || events.length === 0) continue
+        if (!events?.length) continue
 
         const pdf = await generateDailyDigestPDF(events, user.name || 'User', {
           from: new Date(),
-          to: new Date(Date.now() + 7 * 86400000)
+          to: new Date(Date.now() + 7 * 86400000),
         })
 
         const message = `Your upcoming 7-day calendar is attached.`
 
-        /* WHATSAPP */
         if (user.whatsapp_enabled && user.phone_number) {
           await sendWhatsAppMessage(user.phone_number, message, pdf)
           await logActivity(user.id, 'digest_sent_whatsapp', { success: true })
         }
 
-        /* EMAIL */
         if (user.email_enabled && user.email) {
           await sendEmail({
             to: user.email,
             subject: 'Your Upcoming 7-Day Schedule',
-            html: '<p>Your weekly calendar PDF is attached.</p>',
+            html: '<p>Your schedule PDF is attached.</p>',
             attachments: [{ filename: 'schedule.pdf', content: pdf }],
           })
           await logActivity(user.id, 'digest_sent_email', { success: true })
         }
 
         processed++
-
-      } catch (userErr) {
-        console.error('User failed', user.id, userErr)
+      } catch (err) {
+        console.error('USER FAILED:', user.id, err)
       }
     }
 
-    /* STEP 4 — COMPLETE */
+    /* STEP 4 — SUCCESS */
     await supabase.rpc('complete_cron_job', {
       job_id: job.id,
       job_result: { processed }
@@ -125,7 +112,7 @@ export async function GET() {
 
   } catch (err: any) {
 
-    console.error('WORKER CRASH', err)
+    console.error('WORKER CRASH:', err)
 
     if (job?.id) {
       await supabase.rpc('fail_cron_job', {
