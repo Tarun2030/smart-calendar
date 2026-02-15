@@ -70,21 +70,17 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ status: 'unknown_job', received: job })
     }
 
-    /* STEP 2 — TIME CHECK */
-    if (!isDigestTime()) {
-      /*
-       * SAFETY TIMEOUT: if the job has been sitting in "processing" for
-       * more than 30 minutes it will never hit the 10-minute delivery
-       * window.  Complete it as skipped so the queue doesn't jam.
-       */
-      if (isStaleJob(job)) {
-        await supabase.rpc('complete_cron_job', {
-          job_id: job.id,
-          job_result: { skipped: true, reason: 'stale_job_past_30m' }
-        })
-        return NextResponse.json({ status: 'skipped_time_window', reason: 'stale_job_past_30m' })
-      }
+    /* STEP 2a — SAFETY TIMEOUT (checked first so it is always reachable) */
+    if (isStaleJob(job)) {
+      await supabase.rpc('complete_cron_job', {
+        job_id: job.id,
+        job_result: { skipped: true, reason: 'stale_job_past_30m' }
+      })
+      return NextResponse.json({ status: 'skipped_time_window', reason: 'stale_job_past_30m' })
+    }
 
+    /* STEP 2b — TIME CHECK */
+    if (!isDigestTime()) {
       /*
        * Not yet in the delivery window, but the job is still fresh.
        * Leave it in its current state — do NOT complete or fail it —
