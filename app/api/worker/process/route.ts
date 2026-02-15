@@ -13,12 +13,14 @@ const supabase = createClient(
 
 /* ---------- IST ---------- */
 
-function getISTNow(): Date {
-  return new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }))
-}
-
 function isDigestTime(): boolean {
-  return getISTNow().getHours() === 19
+  const now = new Date()
+
+  const utcHours = now.getUTCHours()
+  const utcMinutes = now.getUTCMinutes()
+
+  // 19:00 IST = 13:30 UTC
+  return utcHours === 13 && utcMinutes >= 30 && utcMinutes < 35
 }
 
 /* ========================================================= */
