@@ -1,173 +1,108 @@
-import jsPDF from 'jspdf';
-import autoTable from 'jspdf-autotable';
-import { formatDate, formatTime } from '@/lib/utils/date';
-import type { Event } from '@/lib/types/event.types';
+import jsPDF from 'jspdf'
+import { format } from 'date-fns'
+import type { Event } from '@/lib/types/event.types'
 
-/**
- * Generate a PDF daily digest report.
- */
+function groupEvents(events: Event[]) {
+  const map: Record<string, Event[]> = {}
+
+  for (const e of events) {
+    if (!map[e.date]) map[e.date] = []
+    map[e.date].push(e)
+  }
+
+  return Object.entries(map).slice(0, 7)
+}
+
+function summary(events: Event[]) {
+  return {
+    flights: events.filter(e => e.type === 'flight').length,
+    hotels: events.filter(e => e.type === 'hotel').length,
+    meetings: events.filter(e => e.type === 'meeting').length,
+    tasks: events.filter(e => e.type === 'task' && e.status !== 'completed').length,
+    deadlines: events.filter(e => e.type === 'deadline').length,
+  }
+}
+
+function time12h(t?: string | null) {
+  if (!t) return ''
+  const [h, m] = t.split(':')
+  const hour = Number(h)
+  const ampm = hour >= 12 ? 'PM' : 'AM'
+  const display = hour % 12 || 12
+  return `${display}:${m} ${ampm}`
+}
+
 export async function generateDailyDigestPDF(
   events: Event[],
   userName: string,
-  dateRange: { from: Date; to: Date }
+  range: { from: Date; to: Date }
 ): Promise<Buffer> {
-  const doc = new jsPDF();
-  const pageWidth = doc.internal.pageSize.getWidth();
-  const pageHeight = doc.internal.pageSize.getHeight();
 
-  // Header with blue background
-  doc.setFillColor(59, 130, 246);
-  doc.rect(0, 0, pageWidth, 40, 'F');
+  const doc = new jsPDF({ unit: 'pt', format: 'a4' })
+  const width = doc.internal.pageSize.getWidth()
 
-  doc.setTextColor(255, 255, 255);
-  doc.setFontSize(24);
-  doc.text('WhatsApp AI Assistant', 20, 25);
+  /* HEADER */
+  doc.setFont('helvetica', 'bold')
+  doc.setFontSize(18)
+  doc.text('Smart Calendar', 40, 40)
 
-  doc.setFontSize(12);
-  doc.text(`Daily Digest for ${userName}`, 20, 33);
+  doc.setFontSize(10)
+  doc.setFont('helvetica', 'normal')
+  doc.text(userName, 40, 58)
+  doc.text(format(new Date(), 'PPP p'), width - 40, 40, { align: 'right' })
 
-  // Reset text color
-  doc.setTextColor(0, 0, 0);
+  /* SUMMARY PILLS */
+  const s = summary(events)
+  let y = 90
 
-  // Date range
-  doc.setFontSize(10);
-  doc.setTextColor(100, 100, 100);
-  doc.text(
-    `${formatDate(dateRange.from)} - ${formatDate(dateRange.to)}`,
-    pageWidth - 20,
-    25,
-    { align: 'right' }
-  );
+  const pills = [
+    `Flights ${s.flights}`,
+    `Hotels ${s.hotels}`,
+    `Meetings ${s.meetings}`,
+    `Tasks ${s.tasks}`,
+    `Deadlines ${s.deadlines}`
+  ]
 
-  let yPosition = 50;
+  let x = 40
+  pills.forEach(p => {
+    doc.setFillColor(245, 245, 245)
+    doc.roundedRect(x, y - 12, 90, 22, 8, 8, 'F')
+    doc.setTextColor(20)
+    doc.setFontSize(9)
+    doc.text(p, x + 8, y)
+    x += 100
+  })
 
-  // Summary Section
-  doc.setFontSize(16);
-  doc.setTextColor(0, 0, 0);
-  doc.text('Summary', 20, yPosition);
-  yPosition += 10;
+  y += 40
 
-  const summary = getEventSummary(events);
-  doc.setFontSize(10);
-  doc.setTextColor(60, 60, 60);
+  /* WEEK GRID */
+  const days = groupEvents(events)
 
-  const summaryData = [
-    ['Upcoming Flights', summary.flights.toString()],
-    ['Hotel Bookings', summary.hotels.toString()],
-    ['Meetings', summary.meetings.toString()],
-    ['Pending Tasks', summary.tasks.toString()],
-    ['Upcoming Deadlines', summary.deadlines.toString()],
-  ];
+  const colWidth = (width - 80) / 7
+  let col = 0
 
-  autoTable(doc, {
-    startY: yPosition,
-    head: [['Category', 'Count']],
-    body: summaryData,
-    theme: 'grid',
-    headStyles: { fillColor: [59, 130, 246] },
-    margin: { left: 20, right: 20 },
-  });
+  days.forEach(([date, dayEvents]) => {
+    let colX = 40 + col * colWidth
+    let rowY = y
 
-  yPosition = (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 15;
+    doc.setFont('helvetica', 'bold')
+    doc.setFontSize(10)
+    doc.text(format(new Date(date), 'EEE dd'), colX, rowY)
 
-  // Flights Section
-  if (summary.flights > 0) {
-    const flights = events.filter((e) => e.type === 'flight');
-    yPosition = addEventSection(doc, 'Upcoming Flights', flights, yPosition);
-  }
+    rowY += 14
 
-  // Hotels Section
-  if (summary.hotels > 0) {
-    const hotels = events.filter((e) => e.type === 'hotel');
-    yPosition = addEventSection(doc, 'Hotel Bookings', hotels, yPosition);
-  }
+    doc.setFont('helvetica', 'normal')
+    doc.setFontSize(9)
 
-  // Meetings Section
-  if (summary.meetings > 0) {
-    const meetings = events.filter((e) => e.type === 'meeting');
-    yPosition = addEventSection(doc, 'Meetings', meetings, yPosition);
-  }
+    dayEvents.slice(0, 8).forEach(e => {
+      const line = `${time12h(e.time)} ${e.title}`
+      const split = doc.splitTextToSize(line, colWidth - 6)
+      doc.text(split, colX, rowY)
+      rowY += split.length * 10 + 4
+    })
 
-  // Tasks Section
-  if (summary.tasks > 0) {
-    const tasks = events.filter((e) => e.type === 'task' && e.status !== 'completed');
-    yPosition = addEventSection(doc, 'Pending Tasks', tasks, yPosition);
-  }
+    col++
+  })
 
-  // Deadlines Section
-  if (summary.deadlines > 0) {
-    const deadlines = events.filter((e) => e.type === 'deadline');
-    yPosition = addEventSection(doc, 'Upcoming Deadlines', deadlines, yPosition, true);
-  }
-
-  // Footer
-  const footerY = pageHeight - 15;
-  doc.setFontSize(8);
-  doc.setTextColor(150, 150, 150);
-  doc.text(
-    `Generated on ${formatDate(new Date())}`,
-    pageWidth / 2,
-    footerY,
-    { align: 'center' }
-  );
-  doc.text(
-    'WhatsApp AI Assistant - Your Personal Event Manager',
-    pageWidth / 2,
-    footerY + 5,
-    { align: 'center' }
-  );
-
-  return Buffer.from(doc.output('arraybuffer'));
-}
-
-function getEventSummary(events: Event[]) {
-  return {
-    flights: events.filter((e) => e.type === 'flight').length,
-    hotels: events.filter((e) => e.type === 'hotel').length,
-    meetings: events.filter((e) => e.type === 'meeting').length,
-    tasks: events.filter((e) => e.type === 'task' && e.status !== 'completed').length,
-    deadlines: events.filter((e) => e.type === 'deadline').length,
-  };
-}
-
-function addEventSection(
-  doc: jsPDF,
-  title: string,
-  events: Event[],
-  startY: number,
-  isUrgent: boolean = false
-): number {
-  // Check if we need a new page
-  if (startY > doc.internal.pageSize.getHeight() - 60) {
-    doc.addPage();
-    startY = 20;
-  }
-
-  doc.setFontSize(14);
-  doc.setTextColor(0, 0, 0);
-  doc.text(title, 20, startY);
-  startY += 10;
-
-  const tableData = events.map((event) => [
-    formatDate(event.date),
-    event.time ? formatTime(event.time) : '-',
-    event.title,
-    event.person || '-',
-    event.location || '-',
-  ]);
-
-  autoTable(doc, {
-    startY,
-    head: [['Date', 'Time', 'Title', 'Person', 'Location']],
-    body: tableData,
-    theme: 'striped',
-    headStyles: {
-      fillColor: isUrgent ? [239, 68, 68] : [59, 130, 246],
-      textColor: [255, 255, 255],
-    },
-    margin: { left: 20, right: 20 },
-    styles: { fontSize: 9 },
-  });
-
-  return (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 15;
+  return Buffer.from(doc.output('arraybuffer'))
 }
