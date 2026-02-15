@@ -20,6 +20,19 @@ const client = twilio(
 
 const FROM = 'whatsapp:' + process.env.TWILIO_WHATSAPP_NUMBER!;
 
+/* ---------------- TIME HELPERS ---------------- */
+
+// convert server UTC -> IST -> back to correct ISO
+function getNowISTISOString() {
+  const now = new Date();
+
+  const ist = new Date(
+    now.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' })
+  );
+
+  return new Date(ist.getTime() - ist.getTimezoneOffset() * 60000).toISOString();
+}
+
 /* ---------------- FORMAT ---------------- */
 
 function format12h(time: string | null) {
@@ -36,14 +49,16 @@ function format12h(time: string | null) {
 export async function GET() {
   try {
 
-    const now = new Date().toISOString();
+    const nowIST = getNowISTISOString();
 
     const { data: events, error } = await supabase
       .from('events')
-      .select('id, title, date, time, whatsapp_phone')
+      .select('id, title, date, time, whatsapp_phone, reminder_at')
       .eq('reminder_sent', false)
       .not('reminder_at', 'is', null)
-      .lte('reminder_at', now);
+      .lte('reminder_at', nowIST)
+      .order('reminder_at', { ascending: true })
+      .limit(20);
 
     if (error) throw error;
 
@@ -53,28 +68,33 @@ export async function GET() {
     let sent = 0;
 
     for (const e of events) {
+      try {
 
-      const message =
+        const message =
 `⏰ Reminder
 
 ${e.title}
 ${e.date}${e.time ? ' at ' + format12h(e.time) : ''}`;
 
-      await client.messages.create({
-        from: FROM,
-        to: `whatsapp:${e.whatsapp_phone}`,
-        body: message
-      });
+        await client.messages.create({
+          from: FROM,
+          to: `whatsapp:${e.whatsapp_phone}`,
+          body: message
+        });
 
-      await supabase
-        .from('events')
-        .update({
-          reminder_sent: true,
-          last_notified_at: new Date().toISOString()
-        })
-        .eq('id', e.id);
+        await supabase
+          .from('events')
+          .update({
+            reminder_sent: true,
+            last_notified_at: new Date().toISOString()
+          })
+          .eq('id', e.id);
 
-      sent++;
+        sent++;
+
+      } catch (twilioErr) {
+        console.error('Twilio failed for event', e.id, twilioErr);
+      }
     }
 
     return NextResponse.json({ sent });
