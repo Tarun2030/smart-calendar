@@ -9,7 +9,7 @@ import type { Event } from '@/lib/types/event.types';
 
 export const dynamic = 'force-dynamic';
 
-/* ---------------- SUPABASE (for reminders) ---------------- */
+/* ---------------- SUPABASE ---------------- */
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -22,51 +22,14 @@ function getISTNow(): Date {
   return new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
 }
 
-function is7AMIST(): boolean {
+/* Send digest only at 7 PM IST */
+function isDigestTime(): boolean {
   const now = getISTNow();
-  return now.getHours() === 7; // digest only at 7AM IST
+  return now.getHours() === 19;
 }
 
 /* ===========================================================
-   REMINDER ENGINE (RUNS EVERY CRON INVOCATION)
-   =========================================================== */
-
-async function processReminders() {
-  const nowISO = new Date().toISOString();
-
-  const { data: events, error } = await supabase
-    .from('events')
-    .select('id, title, date, time, whatsapp_phone')
-    .lte('reminder_at', nowISO)
-    .eq('reminder_sent', false)
-    .not('reminder_at', 'is', null);
-
-  if (error || !events || events.length === 0) return;
-
-  logger.info(`Sending ${events.length} reminders`);
-
-  for (const e of events) {
-    try {
-      const msg = `Reminder:\n${e.title}\n${e.date} ${e.time ?? ''}`;
-
-      await sendWhatsAppMessage(e.whatsapp_phone, msg);
-
-      await supabase
-        .from('events')
-        .update({
-          reminder_sent: true,
-          last_notified_at: new Date().toISOString(),
-        })
-        .eq('id', e.id);
-
-    } catch (err) {
-      logger.error('Reminder failed', { eventId: e.id, err });
-    }
-  }
-}
-
-/* ===========================================================
-   MAIN CRON
+   MAIN CRON — DAILY DIGEST ONLY
    =========================================================== */
 
 export async function GET(request: NextRequest) {
@@ -77,18 +40,15 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    logger.info('Cron triggered');
+    logger.info('Digest cron triggered');
 
-    /* ---------- STEP 1: ALWAYS RUN REMINDERS ---------- */
-    await processReminders();
-
-    /* ---------- STEP 2: ONLY RUN DIGEST AT 7AM IST ---------- */
-    if (!is7AMIST()) {
-      logger.info('Skipping digest (not 7AM IST)');
-      return NextResponse.json({ success: true, remindersOnly: true });
+    /* ---------- RUN ONLY AT 7PM IST ---------- */
+    if (!isDigestTime()) {
+      logger.info('Skipping digest (not 7PM IST)');
+      return NextResponse.json({ success: true, skipped: true });
     }
 
-    logger.info('Running daily digest');
+    logger.info('Running daily digest generation');
 
     const users = await getActiveUsers();
     if (!users?.length) return NextResponse.json({ success: true, processed: 0 });
@@ -100,6 +60,7 @@ export async function GET(request: NextRequest) {
         const events = await getUpcomingEvents(user.id, 7);
         if (!events?.length) continue;
 
+        /* ---------- GENERATE PDF ---------- */
         const pdfBuffer = await generateDailyDigestPDF(events, user.name || 'User', {
           from: new Date(),
           to: new Date(Date.now() + 7 * 86400000),
@@ -107,17 +68,19 @@ export async function GET(request: NextRequest) {
 
         const summary = generateTextSummary(events);
 
+        /* ---------- WHATSAPP ---------- */
         if (user.whatsapp_enabled && user.phone_number) {
           await sendWhatsAppMessage(user.phone_number, summary, pdfBuffer);
           await logActivity(user.id, 'digest_sent_whatsapp', { success: true });
         }
 
+        /* ---------- EMAIL ---------- */
         if (user.email_enabled && user.email) {
           await sendEmail({
             to: user.email,
-            subject: `Daily Digest - ${new Date().toLocaleDateString('en-IN')}`,
+            subject: `Your Upcoming 7 Day Schedule`,
             html: generateEmailHTML(events, user.name || 'User'),
-            attachments: [{ filename: 'digest.pdf', content: pdfBuffer }],
+            attachments: [{ filename: 'schedule.pdf', content: pdfBuffer }],
           });
 
           await logActivity(user.id, 'digest_sent_email', { success: true });
@@ -134,7 +97,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ success: true, processed: results.length });
 
   } catch (error) {
-    logger.error('Cron crashed', { error });
+    logger.error('Digest cron crashed', { error });
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }
@@ -150,7 +113,9 @@ function generateTextSummary(events: Event[]): string {
     deadlines: events.filter(e => e.type === 'deadline').length,
   };
 
-  return `Good Morning!
+  return `Good Evening!
+
+Here is your upcoming 7-day schedule:
 
 Flights: ${summary.flights}
 Hotels: ${summary.hotels}
@@ -158,11 +123,15 @@ Meetings: ${summary.meetings}
 Pending Tasks: ${summary.tasks}
 Deadlines: ${summary.deadlines}
 
-Detailed PDF attached.`;
+Detailed calendar PDF attached.`;
 }
 
 /* ---------------- EMAIL HTML ---------------- */
 
 function generateEmailHTML(events: Event[], userName: string): string {
-  return `<h2>Good Morning ${userName}</h2><p>Your weekly digest is attached.</p>`;
+  return `
+    <h2>Good Evening ${userName}</h2>
+    <p>Your upcoming 7-day calendar is attached as a PDF.</p>
+    <p>Please review your schedule and plan accordingly.</p>
+  `;
 }
