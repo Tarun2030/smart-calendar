@@ -1,4 +1,4 @@
-import { NextResponse } from 'next/server'
+import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { getActiveUsers, getUpcomingEvents, logActivity } from '@/lib/supabase/queries'
 import { generateDailyDigestPDF } from '@/lib/integrations/pdf-generator'
@@ -11,13 +11,37 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 )
 
+const STALE_JOB_MS = 30 * 60 * 1000 // 30 minutes
+
 /* 7:00 PM IST = 13:30 UTC */
 function isDigestTime(): boolean {
   const now = new Date()
   return now.getUTCHours() === 13 && now.getUTCMinutes() >= 30 && now.getUTCMinutes() <= 40
 }
 
-export async function GET() {
+/**
+ * Returns true when the job has been in "processing" state for longer
+ * than STALE_JOB_MS.  Uses job.created_at as the baseline timestamp
+ * (the moment the cron row was inserted / claimed).  If the field is
+ * missing or unparseable the job is treated as NOT stale so the normal
+ * time-window retry logic applies.
+ */
+function isStaleJob(job: any): boolean {
+  const ts = job.created_at ?? job.claimed_at ?? job.updated_at
+  if (!ts) return false
+  const age = Date.now() - new Date(ts).getTime()
+  return Number.isFinite(age) && age > STALE_JOB_MS
+}
+
+export async function GET(request: NextRequest) {
+  /* ── SECURITY: require Bearer token ── */
+  const authHeader = request.headers.get('authorization')
+  const expected = `Bearer ${process.env.CRON_SECRET}`
+
+  if (!process.env.CRON_SECRET || authHeader !== expected) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  }
+
   let job: any = null
 
   try {
@@ -49,11 +73,25 @@ export async function GET() {
 
     /* STEP 2 — TIME CHECK */
     if (!isDigestTime()) {
-      await supabase.rpc('complete_cron_job', {
-        job_id: job.id,
-        job_result: { skipped: true, reason: 'not_7pm_IST' }
-      })
-      return NextResponse.json({ status: 'skipped_time_window' })
+      /*
+       * SAFETY TIMEOUT: if the job has been sitting in "processing" for
+       * more than 30 minutes it will never hit the 10-minute delivery
+       * window.  Complete it as skipped so the queue doesn't jam.
+       */
+      if (isStaleJob(job)) {
+        await supabase.rpc('complete_cron_job', {
+          job_id: job.id,
+          job_result: { skipped: true, reason: 'stale_job_past_30m' }
+        })
+        return NextResponse.json({ status: 'skipped_time_window', reason: 'stale_job_past_30m' })
+      }
+
+      /*
+       * Not yet in the delivery window, but the job is still fresh.
+       * Leave it in its current state — do NOT complete or fail it —
+       * so the next cron ping re-claims and retries it.
+       */
+      return NextResponse.json({ status: 'waiting_for_window' })
     }
 
     /* STEP 3 — RUN DIGEST */
