@@ -21,15 +21,14 @@ function isDigestTime(): boolean {
 
 /**
  * Returns true when the job has been in "processing" state for longer
- * than STALE_JOB_MS.  Uses job.created_at as the baseline timestamp
- * (the moment the cron row was inserted / claimed).  If the field is
- * missing or unparseable the job is treated as NOT stale so the normal
+ * than STALE_JOB_MS.  Uses job.started_at — the timestamp the database
+ * sets when the job is claimed for processing.  If started_at is absent
+ * or unparseable the job is treated as NOT stale so the normal
  * time-window retry logic applies.
  */
 function isStaleJob(job: any): boolean {
-  const ts = job.created_at ?? job.claimed_at ?? job.updated_at
-  if (!ts) return false
-  const age = Date.now() - new Date(ts).getTime()
+  if (!job.started_at) return false
+  const age = Date.now() - new Date(job.started_at).getTime()
   return Number.isFinite(age) && age > STALE_JOB_MS
 }
 
