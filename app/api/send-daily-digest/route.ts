@@ -44,13 +44,19 @@ export async function GET(request: NextRequest) {
        Instead of sending messages, just create a job
        ------------------------------------------------ */
 
+    const today = new Date().toISOString().split('T')[0]
+
     const { error } = await supabase
       .from('cron_jobs')
-      .insert({
-        job_type: 'daily_digest',
-        status: 'pending',
-        created_at: new Date().toISOString()
-      });
+      .upsert(
+        {
+          job_type: 'daily_digest',
+          run_date: today,
+          status: 'pending',
+          created_at: new Date().toISOString(),
+        },
+        { onConflict: 'job_type,run_date', ignoreDuplicates: true }
+      );
 
     if (error) {
       return NextResponse.json({ error: error.message }, { status: 500 });
