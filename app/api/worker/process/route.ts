@@ -67,9 +67,34 @@ export async function GET() {
       return NextResponse.json({ status: 'no_users' })
     }
 
+    /* IDEMPOTENCY — load today's already-sent set in one query */
+    const today = new Date().toISOString().split('T')[0]
+
+    const { data: alreadySent, error: logError } = await supabase
+      .from('user_digest_log')
+      .select('user_id')
+      .eq('date', today)
+
+    if (logError) {
+      console.error('Failed to read user_digest_log:', logError)
+      // Non-fatal: proceed without the guard so we don't silently skip everyone.
+      // Worst case is a duplicate send, which is safer than zero sends.
+    }
+
+    const sentToday = new Set(
+      (alreadySent || []).map((row: { user_id: string }) => row.user_id)
+    )
+
     let processed = 0
+    let skipped = 0
 
     for (const user of users) {
+      /* IDEMPOTENCY — skip users who already received a digest today */
+      if (sentToday.has(user.id)) {
+        skipped++
+        continue
+      }
+
       try {
         const events: Event[] = await getUpcomingEvents(user.id, 7)
         if (!events?.length) continue
@@ -81,22 +106,60 @@ export async function GET() {
 
         const message = `Your upcoming 7-day calendar is attached.`
 
+        let delivered = false
+
+        /* WhatsApp — independent try/catch so email is still attempted on failure */
         if (user.whatsapp_enabled && user.phone_number) {
-          await sendWhatsAppMessage(user.phone_number, message, pdf)
-          await logActivity(user.id, 'digest_sent_whatsapp', { success: true })
+          try {
+            await sendWhatsAppMessage(user.phone_number, message, pdf)
+            await logActivity(user.id, 'digest_sent_whatsapp', { success: true })
+            delivered = true
+          } catch (waErr) {
+            console.error('WHATSAPP FAILED:', user.id, waErr)
+            await logActivity(user.id, 'digest_sent_whatsapp', {
+              success: false,
+              error: String(waErr),
+            }).catch(() => {}) // swallow logActivity failure
+          }
         }
 
+        /* Email — independent try/catch so one channel failing doesn't block the other */
         if (user.email_enabled && user.email) {
-          await sendEmail({
-            to: user.email,
-            subject: 'Your Upcoming 7-Day Schedule',
-            html: '<p>Your schedule PDF is attached.</p>',
-            attachments: [{ filename: 'schedule.pdf', content: pdf }],
-          })
-          await logActivity(user.id, 'digest_sent_email', { success: true })
+          try {
+            await sendEmail({
+              to: user.email,
+              subject: 'Your Upcoming 7-Day Schedule',
+              html: '<p>Your schedule PDF is attached.</p>',
+              attachments: [{ filename: 'schedule.pdf', content: pdf }],
+            })
+            await logActivity(user.id, 'digest_sent_email', { success: true })
+            delivered = true
+          } catch (emErr) {
+            console.error('EMAIL FAILED:', user.id, emErr)
+            await logActivity(user.id, 'digest_sent_email', {
+              success: false,
+              error: String(emErr),
+            }).catch(() => {}) // swallow logActivity failure
+          }
         }
 
-        processed++
+        /* IDEMPOTENCY — record that this user received a digest today.
+           Only written when at least one channel succeeded, so a total
+           delivery failure allows a retry on the next worker invocation. */
+        if (delivered) {
+          const { error: insertErr } = await supabase
+            .from('user_digest_log')
+            .insert({ user_id: user.id, date: today })
+
+          if (insertErr) {
+            // Log but don't fail — a missing row just means the user
+            // might get a second digest if the worker re-runs, which
+            // is acceptable compared to blocking the loop.
+            console.error('Failed to write user_digest_log:', user.id, insertErr)
+          }
+
+          processed++
+        }
       } catch (err) {
         console.error('USER FAILED:', user.id, err)
       }
@@ -105,20 +168,24 @@ export async function GET() {
     /* STEP 4 — SUCCESS */
     await supabase.rpc('complete_cron_job', {
       job_id: job.id,
-      job_result: { processed }
+      job_result: { processed, skipped }
     })
 
-    return NextResponse.json({ status: 'completed', processed })
+    return NextResponse.json({ status: 'completed', processed, skipped })
 
   } catch (err: any) {
 
     console.error('WORKER CRASH:', err)
 
     if (job?.id) {
-      await supabase.rpc('fail_cron_job', {
-        job_id: job.id,
-        job_error: err?.message || 'worker_crash'
-      })
+      try {
+        await supabase.rpc('fail_cron_job', {
+          job_id: job.id,
+          job_error: err?.message || 'worker_crash'
+        })
+      } catch (rpcErr) {
+        console.error('fail_cron_job RPC also failed:', rpcErr)
+      }
     }
 
     return NextResponse.json({ status: 'worker_failed' }, { status: 500 })
