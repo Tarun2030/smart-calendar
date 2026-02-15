@@ -14,9 +14,9 @@ const supabase = createClient(
 const STALE_JOB_MS = 30 * 60 * 1000 // 30 minutes
 
 /* 7:00 PM IST = 13:30 UTC */
+/* TODO: restore real check after testing */
 function isDigestTime(): boolean {
-  const now = new Date()
-  return now.getUTCHours() === 13 && now.getUTCMinutes() >= 30 && now.getUTCMinutes() <= 40
+  return true
 }
 
 /**
